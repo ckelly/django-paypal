@@ -3,7 +3,7 @@
 from django.db import models
 from django.conf import settings
 
-from paypal.standard.signals import payment_was_successful, payment_was_flagged
+from paypal.standard.signals import payment_was_successful, payment_was_flagged, subscription_was_cancelled, subscription_was_eot, subscription_was_modified, subscription_was_signed_up
 
 # ### ToDo: would be cool if PayPalIPN.query was a JSON field
 # ### or something else that let you get at the data better.
@@ -90,6 +90,11 @@ class PayPalIPN(models.Model):
     txn_type = models.CharField("Transaction Type", max_length=128, blank=True, help_text="PayPal transaction type.")
     parent_txn_id = models.CharField("Parent Transaction ID", max_length=19, blank=True)
 
+    # Subscription information
+    subscr_id = models.CharField("Subscriber ID", max_length=19, blank=True, help_text="PayPal Subscriber ID.")
+    subscr_date = models.DateTimeField(blank=True, null=True, help_text="HH:MM:SS DD Mmm YY, YYYY PST")
+    subscr_effective = models.DateTimeField(blank=True, null=True, help_text="HH:MM:SS DD Mmm YY, YYYY PST")
+
     # Recurring Payments:
     profile_status = models.CharField(max_length=32, blank=True) 
     initial_payment_amount = models.FloatField(default=0, blank=True, null=True)
@@ -136,6 +141,18 @@ class PayPalIPN(models.Model):
         
     def is_transaction(self):
         return len(self.txn_id) > 0
+    
+    def is_subscription_cancellation(self):
+        return self.txn_type == "subscr_cancel"
+    
+    def is_subscription_end_of_term(self):
+        return self.txn_type == "subscr_eot"
+    
+    def is_subscription_modified(self):
+        return self.txn_type == "subscr_modify"
+    
+    def is_subscription_signup(self):
+        return self.txn_type == "subscr_signup"
     
     def is_recurring(self):
         return len(self.recurring_payment_id) > 0
@@ -194,7 +211,16 @@ class PayPalIPN(models.Model):
         if self.flag:
             payment_was_flagged.send(sender=self)
         else:
-            payment_was_successful.send(sender=self)
+            if self.is_subscription_cancellation():
+                subscription_was_cancelled.send(sender=self)
+            elif self.is_subscription_signup():
+                subscription_was_signed_up.send(sender=self)
+            elif self.is_subscription_end_of_term():
+                subscription_was_eot.send(sender=self)
+            elif self.is_subscription_modified():
+                subscription_was_modified.send(sender=self)
+            else:
+                payment_was_successful.send(sender=self)
 
     def verify_secret(self, form_instance, secret):
         """
@@ -204,6 +230,20 @@ class PayPalIPN(models.Model):
         from paypal.standard.helpers import check_secret
         if not check_secret(form_instance, secret):
             self.set_flag("Invalid secret.")
+        
+        if self.flag:
+            payment_was_flagged.send(sender=self)
+        else:
+            if self.is_subscription_cancellation():
+                subscription_was_cancelled.send(sender=self)
+            elif self.is_subscription_signup():
+                subscription_was_signed_up.send(sender=self)
+            elif self.is_subscription_end_of_term():
+                subscription_was_eot.send(sender=self)
+            elif self.is_subscription_modified():
+                subscription_was_modified.send(sender=self)
+            else:
+                payment_was_successful.send(sender=self)
 
     def init(self, request):
         self.query = request.POST.urlencode()

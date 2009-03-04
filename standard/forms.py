@@ -26,10 +26,11 @@ class PayPalIPNForm(forms.ModelForm):
     # PayPal dates have non-standard formats.
     payment_date = forms.DateTimeField(required=False, input_formats=PayPalIPN.PAYPAL_DATE_FORMAT)
     next_payment_date = forms.DateTimeField(required=False, input_formats=PayPalIPN.PAYPAL_DATE_FORMAT)
+    subscr_date = forms.DateTimeField(required=False, input_formats=PayPalIPN.PAYPAL_DATE_FORMAT)
+    subscr_effective = forms.DateTimeField(required=False, input_formats=PayPalIPN.PAYPAL_DATE_FORMAT)
 
     class Meta:
         model = PayPalIPN
-
 
 class PayPalPaymentsForm(forms.Form):
     """
@@ -44,15 +45,24 @@ class PayPalPaymentsForm(forms.Form):
     """
     # ### ToDo: Add notify_url initial value.
     
+    button_type = "Buy"
+    
     # API Endpoints.
     ENDPOINT = "https://www.paypal.com/cgi-bin/webscr"
     IMAGE = "http://images.paypal.com/images/x-click-but01.gif"
+    SUBSCRIBE_IMAGE = "https://www.paypal.com/en_US/i/btn/btn_subscribeCC_LG.gif"
+    
     SANDBOX_ENDPOINT = "https://www.sandbox.paypal.com/cgi-bin/webscr"
     SANDBOX_IMAGE = "https://www.sandbox.paypal.com/en_US/i/btn/btn_buynowCC_LG.gif"
+    SUBSCRIBE_SANDBOX_IMAGE = "https://www.sandbox.paypal.com/en_US/i/btn/btn_subscribeCC_LG.gif"
     
     # Choices.
-    CMD_CHOIES = (("_xclick", "Buy now or Donations"), ("_cart", "Shopping cart"))
-    SHIPPING_CHOIES = ((1, "No shipping"), (0, "Shipping"))
+    CMD_CHOICES = (("_xclick", "Buy now or Donations"), ("_cart", "Shopping cart"), ("_xclick-subscriptions", "Subscribe"))
+    SHIPPING_CHOICES = ((1, "No shipping"), (0, "Shipping"))
+    # Subscription-related changes 
+    NO_NOTE_CHOICES = (("1", "No Note"), ("0", "Include Note"))
+    RECURRING_PAYMENT_CHOICES = (("1", "Subscription Payments Recur"), ("0", "Subscription payments do not recur"))
+    REATTEMPT_ON_FAIL_CHOICES = (("1", "reattempt billing on Failure"), ("0", "Do Not reattempt on failure"))
         
     # Where the money goes.
     RECEIVER_EMAIL = settings.PAYPAL_RECEIVER_EMAIL
@@ -63,6 +73,15 @@ class PayPalPaymentsForm(forms.Form):
     item_name = forms.CharField(widget=ValueHiddenInput())
     item_number = forms.CharField(widget=ValueHiddenInput())
     quantity = forms.CharField(widget=ValueHiddenInput())
+    
+    # Subscription-related changes
+    # ToDo: add promotional fields
+    a3 = forms.CharField(widget=ValueHiddenInput()) # Subscription Price
+    p3 = forms.CharField(widget=ValueHiddenInput()) #, initial="1") # Subscription Duration
+    t3 = forms.CharField(widget=ValueHiddenInput()) #, initial="M") # Subscription unit of Duration, default to Month
+    src = forms.CharField(widget=ValueHiddenInput()) #, initial=RECURRING_PAYMENT_CHOICES[0][0]) # is billing recurring? default to yes
+    sra = forms.CharField(widget=ValueHiddenInput()) #, initial=REATTEMPT_ON_FAIL_CHOICES[0][0]) # reattempt billing on failed cc transaction
+    no_note = forms.CharField(widget=ValueHiddenInput()) #, initial=NO_NOTE_CHOICES[0][0])
 
     # IPN control.
     notify_url = forms.CharField(widget=ValueHiddenInput()) #, initial=NOTIFY_URL)
@@ -70,12 +89,25 @@ class PayPalPaymentsForm(forms.Form):
     return_url = forms.CharField(widget=ReservedValueHiddenInput(attrs={"name":"return"}))
     custom = forms.CharField(widget=ValueHiddenInput())
     invoice = forms.CharField(widget=ValueHiddenInput())
-
+    
     # Default fields.
-    cmd = forms.ChoiceField(widget=forms.HiddenInput(), initial=CMD_CHOIES[0][0])
+    cmd = forms.ChoiceField(widget=forms.HiddenInput(), initial=CMD_CHOICES[0][0])
     charset = forms.CharField(widget=forms.HiddenInput(), initial="utf-8")
     currency_code = forms.CharField(widget=forms.HiddenInput(), initial="USD")
-    no_shipping = forms.ChoiceField(widget=forms.HiddenInput(), choices=SHIPPING_CHOIES, initial=SHIPPING_CHOIES[0][0])
+    no_shipping = forms.ChoiceField(widget=forms.HiddenInput(), choices=SHIPPING_CHOICES, initial=SHIPPING_CHOICES[0][0])
+
+    def __init__(self, *args, **kwargs):
+        '''
+        call the form with the named param "button_type"
+        ... PayPalPaymentsForm(button_type="subscribe")
+        '''
+        try:
+            self.button_type = kwargs["button_type"]
+            del kwargs["button_type"]
+        except:
+            pass
+
+        super(PayPalPaymentsForm, self).__init__(self, *args, **kwargs)
 
     def _render(self, endpoint, image):
         return mark_safe(u"""
@@ -86,10 +118,17 @@ class PayPalPaymentsForm(forms.Form):
         """ % (endpoint, self.as_p(), image)) 
     
     def render(self):
-        return self._render(self.ENDPOINT, self.IMAGE)
+        #ToDo: better way to set this option? 
+        if self.button_type == "subscribe":
+            return self._render(self.ENDPOINT, self.SUBSCRIBE_IMAGE)
+        else:
+            return self._render(self.ENDPOINT, self.IMAGE)
 
     def sandbox(self):
-        return self._render(self.SANDBOX_ENDPOINT, self.SANDBOX_IMAGE)
+        if self.button_type == "subscribe":
+            return self._render(self.SANDBOX_ENDPOINT, self.SUBSCRIBE_SANDBOX_IMAGE)
+        else:
+            return self._render(self.SANDBOX_ENDPOINT, self.SANDBOX_IMAGE)
 
 
 class PayPalEncryptedPaymentsForm(PayPalPaymentsForm):
@@ -169,7 +208,6 @@ class PayPalSharedSecretEncryptedPaymentsForm(PayPalEncryptedPaymentsForm):
             self.initial['notify_url'] += secret_param
         else:
             self.fields['notify_url'].initial += secret_param
-
 
 class PayPalPaymentsExtendedForm(PayPalPaymentsForm):
     """
